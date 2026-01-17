@@ -29,7 +29,7 @@ from datetime import datetime
 from playwright.async_api import async_playwright
 
 # 常量
-LOGIN_URL = "https://56idc.net/login.php"
+LOGIN_URL = "https://56idc.net/login"
 DASHBOARD_URL = "https://56idc.net/clientarea.php"
 SESSION_DIR = Path(__file__).parent / "sessions"
 
