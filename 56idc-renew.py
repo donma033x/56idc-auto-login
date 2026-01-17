@@ -182,7 +182,7 @@ async def login_account(playwright, account: dict, config: dict, notifier: Teleg
                 pass
         
         Logger.log("Navigate", f"访问 {LOGIN_URL}", "INFO")
-        await page.goto(LOGIN_URL, wait_until='networkidle', timeout=60000)
+        await page.goto(LOGIN_URL, wait_until='domcontentloaded', timeout=60000)
         
         if 'clientarea.php' in page.url:
             Logger.log("Login", "已登录，无需重新登录", "OK")
