@@ -6,7 +6,7 @@ cron: 0 8 * * 1
 new Env('56idc-renew')
 
 环境变量:
-    ACCOUNTS_56IDC: 账号配置，格式: 邮箱:密码:2FA密钥,邮箱:密码 (2FA密钥可选)
+    56IDC_ACCOUNT: 账号配置，格式: 邮箱:密码:2FA密钥,邮箱:密码 (2FA密钥可选)
     STAY_DURATION: 停留时间(秒)，默认10
     TOTP_API_URL: TOTP API地址
 """
@@ -35,7 +35,7 @@ SESSION_DIR = Path(__file__).parent / "sessions"
 def get_config():
     """获取配置"""
     return {
-        'accounts_str': os.environ.get('ACCOUNTS_56IDC', ''),
+        'accounts_str': os.environ.get('56IDC_ACCOUNT', ''),
         'stay_duration': int(os.environ.get('STAY_DURATION', '10')),
         'totp_api_url': os.environ.get('TOTP_API_URL', ''),
     }
@@ -255,7 +255,7 @@ async def main():
     config = get_config()
     
     if not config['accounts_str']:
-        Logger.log("Config", "错误: 未设置 ACCOUNTS_56IDC 环境变量", "ERROR")
+        Logger.log("Config", "错误: 未设置 56IDC_ACCOUNT 环境变量", "ERROR")
         sys.exit(1)
     
     accounts = parse_accounts(config['accounts_str'])
