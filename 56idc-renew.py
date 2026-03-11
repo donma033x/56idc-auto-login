@@ -35,7 +35,7 @@ SESSION_DIR = Path(__file__).parent / "sessions"
 def get_config():
     """获取配置"""
     return {
-        'accounts_str': os.environ.get('56IDC_ACCOUNT', ''),
+        'accounts_str': os.environ.get('_56IDC_ACCOUNT', '') or os.environ.get('56IDC_ACCOUNT', ''),
         'stay_duration': int(os.environ.get('STAY_DURATION', '10')),
         'totp_api_url': os.environ.get('TOTP_API_URL', ''),
     }
@@ -65,6 +65,52 @@ def get_session_file(email: str) -> Path:
 
 
 
+async def extract_machine_names(page) -> list:
+    try:
+        txt = await page.evaluate('() => document.body.innerText || ""')
+        txt = txt.replace('\r', '')
+        lines = [ln.strip() for ln in txt.split('\n') if ln.strip()]
+        out = []
+        for i, ln in enumerate(lines):
+            if '您已激活的产品/服务' in ln:
+                tail = ln.split('您已激活的产品/服务', 1)[1].strip(' :：-')
+                if tail:
+                    out.append(tail)
+                follow = []
+                for j in range(i+1, min(i+4, len(lines))):
+                    x = lines[j]
+                    if any(w in x for w in ['最近的工单', '最近的消息', '购买服务', '退出账户', '报价', '未付款的账单', '我的工单']):
+                        break
+                    if len(x) >= 2:
+                        follow.append(x)
+                    if len(follow) >= 2:
+                        break
+                if follow:
+                    base = ' '.join(follow).strip()
+                    out.append(base)
+                break
+        if out:
+            base = out[0]
+            if len(out) > 1:
+                extra = out[1]
+                if any(k in extra.lower() for k in ['lxd', 'nat', 'vps']):
+                    base = (base + ' ' + extra).strip()
+                elif len(extra) > len(base):
+                    base = extra
+            return [base]
+        for i, ln in enumerate(lines):
+            low = ln.lower()
+            if any(k in low for k in ['nat', 'mini', 'lxd', 'vps', 'server', 'toronto', 'dallas']):
+                base = ln.strip()
+                if i+1 < len(lines) and any(k in lines[i+1].lower() for k in ['lxd', 'nat', 'vps']):
+                    base = f"{base} {lines[i+1].strip()}"
+                return [base]
+        return []
+    except Exception as e:
+        Logger.log('Machine', f'提取失败: {e}', 'WARN')
+        return []
+
+
 
 class Logger:
     @staticmethod
@@ -76,15 +122,23 @@ class Logger:
 
 
 def get_totp_code(secret: str, totp_api_url: str) -> str:
-    if not totp_api_url or not secret:
+    if not secret:
         return ''
+    if totp_api_url:
+        try:
+            response = requests.get(f"{totp_api_url}/totp/{secret}", timeout=10)
+            if response.status_code == 200:
+                code = response.json().get('code', '')
+                if code:
+                    return code
+        except Exception as e:
+            Logger.log("TOTP", f"TOTP API失败，回退本地: {e}", "WARN")
     try:
-        response = requests.get(f"{totp_api_url}/totp/{secret}", timeout=10)
-        if response.status_code == 200:
-            return response.json().get('code', '')
+        import pyotp
+        return pyotp.TOTP(secret).now()
     except Exception as e:
-        Logger.log("TOTP", f"获取TOTP失败: {e}", "ERROR")
-    return ''
+        Logger.log("TOTP", f"本地TOTP失败: {e}", "ERROR")
+        return ''
 
 
 async def cdp_click(cdp, x, y):
@@ -186,6 +240,9 @@ async def login_account(playwright, account: dict, config: dict) -> bool:
             cookies = await context.cookies()
             with open(session_file, 'w') as f:
                 json.dump(cookies, f)
+            await page.goto(DASHBOARD_URL, wait_until='domcontentloaded', timeout=60000)
+            await asyncio.sleep(2)
+            account['machines'] = await extract_machine_names(page)
             return True
         
         # 处理 Turnstile
@@ -235,7 +292,9 @@ async def login_account(playwright, account: dict, config: dict) -> bool:
             # 停留
             Logger.log("Stay", f"停留 {config['stay_duration']} 秒", "WAIT")
             await asyncio.sleep(config['stay_duration'])
-            
+            await page.goto(DASHBOARD_URL, wait_until='domcontentloaded', timeout=60000)
+            await asyncio.sleep(2)
+            account['machines'] = await extract_machine_names(page)
             return True
         else:
             Logger.log("Login", f"登录失败: {email}", "ERROR")
@@ -268,6 +327,7 @@ async def main():
     
     success_count = 0
     fail_count = 0
+    detail_lines = []
     
     async with async_playwright() as playwright:
         for i, account in enumerate(accounts, 1):
@@ -275,8 +335,12 @@ async def main():
             
             if await login_account(playwright, account, config):
                 success_count += 1
+                mtxt = '、'.join(account.get('machines', [])) if account.get('machines') else '机器提取失败'
+                detail_lines.append(f"✅ {account.get('email','')} | 机器: {mtxt}")
+                Logger.log("Machine", f"{account.get('email','')} -> {mtxt}", "INFO")
             else:
                 fail_count += 1
+                detail_lines.append(f"❌ {account.get('email','')} | 登录失败")
             
             if i < len(accounts):
                 Logger.log("Wait", "等待 5 秒后处理下一个账号", "WAIT")
@@ -287,13 +351,13 @@ async def main():
     # 发送汇总通知
     if success_count == len(accounts):
         title = "56idc 登录成功"
-        msg = f"✅ 全部 {success_count} 个账号登录成功"
+        msg = f"✅ 全部 {success_count} 个账号登录成功\n" + "\n".join(detail_lines)
     elif success_count > 0:
         title = "56idc 登录部分成功"
-        msg = f"⚠️ 成功 {success_count} 个，失败 {fail_count} 个"
+        msg = f"⚠️ 成功 {success_count} 个，失败 {fail_count} 个\n" + "\n".join(detail_lines)
     else:
         title = "56idc 登录失败"
-        msg = f"❌ 全部 {fail_count} 个账号登录失败"
+        msg = f"❌ 全部 {fail_count} 个账号登录失败\n" + "\n".join(detail_lines)
     
     notify_send(title, msg)
 
